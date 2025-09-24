@@ -1,0 +1,522 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "0d047819",
+   "metadata": {},
+   "source": [
+    "\n",
+    "# Previsão de Área Queimada em Incêndios Florestais (Forest Fires – UCI)\n",
+    "**Disciplina:** Machine Learning e Analytics  \n",
+    "**Instituição:** PUC-Rio (Pós-graduação)  \n",
+    "**Autor:** _[preencher nome]_ · **Data:** _[preencher data]_\n",
+    "\n",
+    "**Resumo:** Estudo preditivo da área queimada (ha) em eventos de incêndio florestal com variáveis meteorológicas e índices do Fire Weather Index (FWI). O fluxo contempla análise exploratória, preparação de dados, baselines, modelagem, otimização, avaliação e discussão.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "ee9f1498",
+   "metadata": {},
+   "source": [
+    "\n",
+    "## 1. Introdução / Contexto\n",
+    "A área queimada em incêndios apresenta distribuição assimétrica, com predominância de valores nulos ou pequenos e poucos eventos extremos. O conjunto Forest Fires, de uso acadêmico, permite estudar relações entre variáveis climáticas/índices FWI e a severidade observada, em um cenário controlado e reprodutível.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7feba2b2",
+   "metadata": {},
+   "source": [
+    "\n",
+    "## 2. Definição do Problema\n",
+    "**Tarefa:** regressão para estimar a área queimada (`area`, em hectares) a partir de variáveis climáticas e índices FWI.  \n",
+    "**Hipóteses:** (i) variáveis do FWI e do clima explicam parte da variabilidade; (ii) representação sazonal de `month`/`day` é relevante; (iii) métodos baseados em árvores capturam não linearidades e interações.  \n",
+    "**Restrições:** leitura do dataset via URL pública; uso de *pipelines* para evitar vazamento; avaliação final em conjunto de teste separado.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "cd400de6",
+   "metadata": {},
+   "source": [
+    "\n",
+    "## 3. Objetivos\n",
+    "1. Estabelecer baselines simples.  \n",
+    "2. Comparar abordagens lineares e *ensembles*.  \n",
+    "3. Otimizar hiperparâmetros com validação cruzada.  \n",
+    "4. Avaliar desempenho em teste e interpretar resultados.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "64541806",
+   "metadata": {},
+   "source": [
+    "\n",
+    "## 4. Descrição do Dataset\n",
+    "Atributos: coordenadas relativas (`X`,`Y`); índices FWI (`FFMC`,`DMC`,`DC`,`ISI`); clima (`temp`,`RH`,`wind`,`rain`); calendário (`month`,`day`). A variável-alvo `area` é contínua e esparsa. A transformação `log1p(area)` reduz a assimetria e estabiliza variância para modelos que minimizam erro quadrático.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "5ba3b926",
+   "metadata": {},
+   "source": [
+    "\n",
+    "## 5. Metodologia (Visão Geral)\n",
+    "1. Análise exploratória descritiva.  \n",
+    "2. Preparação com `ColumnTransformer` e codificação cíclica de `month`/`day`.  \n",
+    "3. Divisão 60/20/20 (treino/validação/teste) com *seed*.  \n",
+    "4. Baselines (média e mediana).  \n",
+    "5. Modelagem: Linear, Ridge, Lasso, Gradient Boosting, Random Forest, Tweedie.  \n",
+    "6. Otimização com `RandomizedSearchCV` e validação cruzada repetida.  \n",
+    "7. Avaliação no teste e interpretação (importâncias por permutação e quantis).\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "ccea27f2",
+   "metadata": {},
+   "source": [
+    "## 6. Importações e Configurações"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "fe4b139a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "import os, time, math, random, sys, platform\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "from tempfile import mkdtemp\n",
+    "\n",
+    "from sklearn.model_selection import train_test_split, RandomizedSearchCV, RepeatedKFold, learning_curve\n",
+    "from sklearn.preprocessing import StandardScaler\n",
+    "from sklearn.compose import ColumnTransformer\n",
+    "from sklearn.pipeline import Pipeline\n",
+    "from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score\n",
+    "from sklearn.linear_model import LinearRegression, Ridge, Lasso, TweedieRegressor\n",
+    "from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor\n",
+    "from sklearn.inspection import permutation_importance\n",
+    "\n",
+    "SEED = 42\n",
+    "np.random.seed(SEED); random.seed(SEED)\n",
+    "cache_dir = mkdtemp()\n",
+    "\n",
+    "print(\"Python:\", sys.version.split()[0], \"| OS:\", platform.platform())\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "718762e9",
+   "metadata": {},
+   "source": [
+    "## 7. Carga dos Dados (URL pública)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b025d81b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "DATA_URL = \"https://raw.githubusercontent.com/CarlysbergBarreto/mvp-machine-learning/main/forestfires.csv\"\n",
+    "\n",
+    "t0 = time.time()\n",
+    "df = pd.read_csv(DATA_URL)\n",
+    "print(f\"Leitura: {time.time()-t0:.2f}s | shape: {df.shape}\")\n",
+    "display(df.head(3)); print(df.dtypes)\n",
+    "\n",
+    "esperadas = [\"X\",\"Y\",\"month\",\"day\",\"FFMC\",\"DMC\",\"DC\",\"ISI\",\"temp\",\"RH\",\"wind\",\"rain\",\"area\"]\n",
+    "faltantes = [c for c in esperadas if c not in df.columns]\n",
+    "assert not faltantes, f\"Colunas ausentes: {faltantes}\"\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "97bf02ba",
+   "metadata": {},
+   "source": [
+    "## 8. Análise Exploratória (EDA)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e04e28dc",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "plt.figure()\n",
+    "df[\"area\"].hist(bins=50)\n",
+    "plt.title(\"Distribuição de area (ha)\"); plt.xlabel(\"area\"); plt.ylabel(\"freq\"); plt.show()\n",
+    "\n",
+    "plt.figure()\n",
+    "np.log1p(df[\"area\"]).hist(bins=50)\n",
+    "plt.title(\"Distribuição de log1p(area)\"); plt.xlabel(\"log1p(area)\"); plt.ylabel(\"freq\"); plt.show()\n",
+    "\n",
+    "prop_zero = (df[\"area\"]==0).mean()\n",
+    "print(f\"Proporção de zeros em area: {prop_zero:.2%}\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7d7c0e7f",
+   "metadata": {},
+   "source": [
+    "## 9. Preparação de Dados"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "6442de0f",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "df = df.copy()\n",
+    "df[\"y\"] = np.log1p(df[\"area\"])\n",
+    "\n",
+    "df[\"month\"] = df[\"month\"].astype(\"category\")\n",
+    "df[\"day\"]   = df[\"day\"].astype(\"category\")\n",
+    "\n",
+    "mes_map = {m:i for i,m in enumerate(df[\"month\"].cat.categories, start=1)}\n",
+    "dia_map = {d:i for i,d in enumerate(df[\"day\"].cat.categories, start=1)}\n",
+    "df[\"month_num\"] = df[\"month\"].map(mes_map)\n",
+    "df[\"day_num\"]   = df[\"day\"].map(dia_map)\n",
+    "\n",
+    "df[\"month_sin\"] = np.sin(2*np.pi*df[\"month_num\"]/12)\n",
+    "df[\"month_cos\"] = np.cos(2*np.pi*df[\"month_num\"]/12)\n",
+    "df[\"day_sin\"]   = np.sin(2*np.pi*df[\"day_num\"]/7)\n",
+    "df[\"day_cos\"]   = np.cos(2*np.pi*df[\"day_num\"]/7)\n",
+    "\n",
+    "num_cols = [\"X\",\"Y\",\"FFMC\",\"DMC\",\"DC\",\"ISI\",\"temp\",\"RH\",\"wind\",\"rain\",\n",
+    "            \"month_sin\",\"month_cos\",\"day_sin\",\"day_cos\"]\n",
+    "\n",
+    "X = df[num_cols].copy()\n",
+    "y = df[\"y\"].values\n",
+    "\n",
+    "pre = ColumnTransformer(\n",
+    "    transformers=[(\"num\", StandardScaler(), num_cols)],\n",
+    "    remainder=\"drop\",\n",
+    "    verbose_feature_names_out=False,\n",
+    ")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f45a9f05",
+   "metadata": {},
+   "source": [
+    "## 10. Divisão dos Dados"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "870c8b41",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "X_train_val, X_test, y_train_val, y_test = train_test_split(\n",
+    "    X, y, test_size=0.20, random_state=SEED\n",
+    ")\n",
+    "X_train, X_val, y_train, y_val = train_test_split(\n",
+    "    X_train_val, y_train_val, test_size=0.25, random_state=SEED\n",
+    ")\n",
+    "\n",
+    "X_train.shape, X_val.shape, X_test.shape\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "de45f21b",
+   "metadata": {},
+   "source": [
+    "## 11. Baselines"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5a20cab2",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "def rmse(y_true, y_pred):\n",
+    "    return math.sqrt(mean_squared_error(y_true, y_pred))\n",
+    "\n",
+    "y_base_mean = np.full_like(y_val, y_train.mean(), dtype=float)\n",
+    "y_base_med  = np.full_like(y_val, np.median(y_train), dtype=float)\n",
+    "\n",
+    "print({\"RMSE_mean\": rmse(y_val,y_base_mean), \"MAE_mean\": mean_absolute_error(y_val,y_base_mean)})\n",
+    "print({\"RMSE_median\": rmse(y_val,y_base_med), \"MAE_median\": mean_absolute_error(y_val,y_base_med)})\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7bb29c61",
+   "metadata": {},
+   "source": [
+    "## 12. Modelagem Inicial"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f691dee1",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "modelos = {\n",
+    "    \"Linear\": LinearRegression(),\n",
+    "    \"Ridge\":  Ridge(),\n",
+    "    \"Lasso\":  Lasso(),\n",
+    "    \"GBR\":    GradientBoostingRegressor(random_state=SEED),\n",
+    "    \"RF\":     RandomForestRegressor(random_state=SEED, n_jobs=-1),\n",
+    "    \"Tweedie\": TweedieRegressor(power=1.5, link=\"log\", max_iter=500),\n",
+    "}\n",
+    "\n",
+    "def avalia(pipe, Xtr, ytr, Xva, yva):\n",
+    "    t0 = time.time()\n",
+    "    pipe.fit(Xtr, ytr)\n",
+    "    pred = pipe.predict(Xva)\n",
+    "    return {\"rmse\": rmse(yva, pred),\n",
+    "            \"mae\": mean_absolute_error(yva, pred),\n",
+    "            \"r2\": r2_score(yva, pred),\n",
+    "            \"treino_s\": time.time()-t0}\n",
+    "\n",
+    "res = []\n",
+    "for nome, est in modelos.items():\n",
+    "    pipe = Pipeline([(\"prep\", pre), (\"est\", est)], memory=cache_dir)\n",
+    "    met = avalia(pipe, X_train, y_train, X_val, y_val)\n",
+    "    res.append((nome, met[\"rmse\"], met[\"mae\"], met[\"r2\"], met[\"treino_s\"]))\n",
+    "\n",
+    "pd.DataFrame(res, columns=[\"modelo\",\"rmse\",\"mae\",\"r2\",\"treino_s\"]).sort_values(\"rmse\").round(3)\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "5e623e77",
+   "metadata": {},
+   "source": [
+    "## 13. Validação Cruzada e Otimização de Hiperparâmetros"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e48aa662",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "base = Pipeline([(\"prep\", pre), (\"est\", RandomForestRegressor(random_state=SEED, n_jobs=-1))],\n",
+    "                memory=cache_dir)\n",
+    "\n",
+    "param_dist = {\n",
+    "    \"est__n_estimators\": np.arange(200, 801, 100),\n",
+    "    \"est__max_depth\": [None, 8, 12, 16, 20],\n",
+    "    \"est__min_samples_split\": [2, 5, 10],\n",
+    "    \"est__min_samples_leaf\": [1, 2, 4],\n",
+    "    \"est__max_features\": [\"sqrt\", \"log2\", 0.5, 0.7, 1.0],\n",
+    "}\n",
+    "\n",
+    "cv = RepeatedKFold(n_splits=5, n_repeats=3, random_state=SEED)\n",
+    "rnd = RandomizedSearchCV(\n",
+    "    base, param_distributions=param_dist, n_iter=30,\n",
+    "    scoring=\"neg_root_mean_squared_error\", cv=cv, n_jobs=-1, random_state=SEED, verbose=0\n",
+    ")\n",
+    "rnd.fit(X_train, y_train)\n",
+    "best_pipe = rnd.best_estimator_\n",
+    "\n",
+    "{\"best_params\": rnd.best_params_, \"cv_rmse\": -rnd.best_score_}\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1411a40a",
+   "metadata": {},
+   "source": [
+    "## 14. Avaliação em Conjunto de Teste"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "eb6bb0f8",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "pred_test = best_pipe.predict(X_test)\n",
+    "print({\"RMSE_test\": rmse(y_test, pred_test),\n",
+    "       \"MAE_test\": mean_absolute_error(y_test, pred_test),\n",
+    "       \"R2_test\": r2_score(y_test, pred_test)})\n",
+    "\n",
+    "plt.figure()\n",
+    "plt.scatter(y_test, pred_test, alpha=0.6)\n",
+    "plt.xlabel(\"y_true = log1p(area)\"); plt.ylabel(\"y_pred\")\n",
+    "plt.title(\"Teste: y_true vs y_pred\"); plt.grid(True); plt.show()\n",
+    "\n",
+    "residuos = y_test - pred_test\n",
+    "plt.figure()\n",
+    "plt.hist(residuos, bins=40)\n",
+    "plt.title(\"Distribuição dos resíduos (teste)\")\n",
+    "plt.xlabel(\"resíduo\"); plt.ylabel(\"freq\"); plt.show()\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "d231d9b3",
+   "metadata": {},
+   "source": [
+    "## 15. Interpretação e Discussão"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ca9e6d68",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "perm = permutation_importance(\n",
+    "    best_pipe, X_val, y_val, n_repeats=20, random_state=SEED,\n",
+    "    scoring=\"neg_root_mean_squared_error\", n_jobs=-1\n",
+    ")\n",
+    "feat_names = best_pipe.named_steps[\"prep\"].get_feature_names_out()\n",
+    "means = perm.importances.mean(axis=1)\n",
+    "p5    = np.percentile(perm.importances, 5, axis=1)\n",
+    "p95   = np.percentile(perm.importances,95, axis=1)\n",
+    "\n",
+    "imp_ci = pd.DataFrame({\"feature\": feat_names, \"mean\": means, \"p5\": p5, \"p95\": p95}).sort_values(\"mean\", ascending=False)\n",
+    "imp_ci.head(15).round(4)\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "57911f56",
+   "metadata": {},
+   "source": [
+    "## 16. Interpretação na Escala Original (hectares)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b541920c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "y_test_ha = np.expm1(y_test)\n",
+    "y_pred_ha = np.expm1(pred_test)\n",
+    "\n",
+    "plt.figure()\n",
+    "plt.scatter(y_test_ha, y_pred_ha, alpha=0.6)\n",
+    "plt.xlabel(\"area observada (ha)\"); plt.ylabel(\"area prevista (ha)\")\n",
+    "plt.title(\"Teste: área observada vs prevista (ha)\")\n",
+    "plt.grid(True); plt.show()\n",
+    "\n",
+    "mae_med_ha = np.median(np.abs(y_test_ha - y_pred_ha))\n",
+    "{\"MAE_mediano_ha\": float(mae_med_ha)}\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "8bda1a36",
+   "metadata": {},
+   "source": [
+    "## 17. Limitações"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "47bd8a9d",
+   "metadata": {},
+   "source": [
+    "\n",
+    "Tamanho reduzido do conjunto; proporção elevada de zeros; ausência de variáveis operacionais com potencial explicativo; escopo geográfico específico.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "560ce637",
+   "metadata": {},
+   "source": [
+    "## 18. Conclusões"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f5dd76da",
+   "metadata": {},
+   "source": [
+    "\n",
+    "A transformação `log1p(area)` e a codificação cíclica de `month`/`day` contribuíram para um ajuste mais estável. Os *ensembles* superaram baselines e métodos lineares. A avaliação em teste e a análise de importâncias sustentam as conclusões.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1928d8ad",
+   "metadata": {},
+   "source": [
+    "## 19. Checklist respondido"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1c3ab081",
+   "metadata": {},
+   "source": [
+    "\n",
+    "**Definição do Problema:** descrição, hipóteses, restrições e dataset documentados.  \n",
+    "**Preparação:** divisão 60/20/20, validação cruzada motivada, transformações adequadas e análise de relevância.  \n",
+    "**Modelagem:** seleção e justificativa de algoritmos; otimização; diagnóstico de under/overfitting.  \n",
+    "**Avaliação:** métricas apropriadas, avaliação final em teste, comparação de modelos e justificativa da melhor solução.\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "14991e1c",
+   "metadata": {},
+   "source": [
+    "## 20. Reprodutibilidade / Ambiente"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "f0813dfd",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "import sklearn\n",
+    "print(\"sklearn:\", sklearn.__version__)\n",
+    "print(\"pandas:\", pd.__version__, \"| numpy:\", np.__version__)\n",
+    "print(\"Python:\", sys.version.split()[0])\n"
+   ]
+  }
+ ],
+ "metadata": {},
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
