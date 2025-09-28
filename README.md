@@ -3,7 +3,7 @@ Projeto de previsão da área queimada em incêndios florestais (dataset Forest 
 
 ## Arquivos
 - `forestfires.csv`: dataset
-- `MVP_ForestFires_Colab_PROF.ipynb`: notebook completo (Colab)
+- `MVP_ML_&_Analytics_Final_Revisado.ipynb`: notebook completo (Colab)
 
 ## Executar no Colab
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](
