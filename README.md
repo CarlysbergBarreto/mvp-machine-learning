@@ -7,5 +7,5 @@ Projeto de previsão da área queimada em incêndios florestais (dataset Forest 
 
 ## Executar no Colab
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](
-  https://colab.research.google.com/github/CarlysbergBarreto/mvp-machine-learning/blob/main/MVP_ForestFires_Colab_PROF.ipynb
+  https://colab.research.google.com/github/CarlysbergBarreto/mvp-machine-learning/blob/main/MVP_ML_&_Analytics_Final_Revisado.ipynb
 )
